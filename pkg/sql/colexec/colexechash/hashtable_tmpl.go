@@ -612,10 +612,28 @@ func (ht *HashTable) Check(probeVecs []coldata.Vec, nToCheck uint64, probeSel []
 // CheckProbeForDistinct performs a column by column check for duplicated tuples
 // in the probe table.
 func (ht *HashTable) CheckProbeForDistinct(vecs []coldata.Vec, nToCheck uint64, sel []int) uint64 {
+	// Optimization: skip checking column equality when the key matches itself.
+	nDiffers := uint64(0)
+	toCheckSlice := ht.ProbeScratch.ToCheck
+	_ = toCheckSlice[nToCheck-1]
+	for toCheckPos := uint64(0); toCheckPos < nToCheck && nDiffers < nToCheck; toCheckPos++ {
+		//gcassert:bce
+		toCheck := toCheckSlice[toCheckPos]
+		keyID := ht.ProbeScratch.GroupID[toCheck]
+		if keyID == toCheck+1 {
+			if ht.ProbeScratch.HeadID[toCheck] == 0 {
+				ht.ProbeScratch.HeadID[toCheck] = keyID
+			}
+		} else {
+			//gcassert:bce
+			toCheckSlice[nDiffers] = toCheck
+			nDiffers++
+		}
+	}
 	for i := range ht.keyCols {
 		ht.checkColAgainstItselfForDistinct(vecs[i], nToCheck, sel)
 	}
-	nDiffers := uint64(0)
+	nDiffers = 0
 	_CHECK_BODY(false, false, true)
 	return nDiffers
 }

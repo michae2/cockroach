@@ -473,9 +473,9 @@ func runDistinctBenchmarks(
 	shuffleInput bool,
 ) {
 	rng, _ := randutil.NewTestRand()
-	const nCols = 2
-	const bytesValueLength = 8
-	distinctCols := []uint32{0, 1}
+	const nCols = 16
+	const bytesValueLength = 128
+	distinctCols := []uint32{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
 	nullsOptions := []bool{false, true}
 	nRowsOptions := []int{1, 64, 4 * coldata.BatchSize(), 256 * coldata.BatchSize()}
 	if isExternal {

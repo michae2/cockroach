@@ -491,6 +491,12 @@ func runDistinctBenchmarks(
 			vec.Int64()[0] = 0
 		} else if typ == types.Bytes {
 			vec.Bytes().Set(0, bytesValueScratch)
+		} else if typ == types.Jsonb {
+			j, err := json.Random(20, rng)
+			if err != nil {
+				colexecerror.InternalError(err)
+			}
+			vec.JSON().Set(0, j)
 		} else {
 			colexecerror.InternalError(errors.AssertionFailedf("unsupported type %s", typ))
 		}
@@ -521,6 +527,16 @@ func runDistinctBenchmarks(
 			} else {
 				vec.Bytes().Set(i, vec.Bytes().Get(i-1))
 			}
+		} else if typ == types.Jsonb {
+			if rng.Float64() < newValueProbability {
+				j, err := json.Random(20, rng)
+				if err != nil {
+					colexecerror.InternalError(err)
+				}
+				vec.JSON().Set(i, j)
+			} else {
+				vec.JSON().Set(i, vec.JSON().Get(i-1))
+			}
 		} else {
 			colexecerror.InternalError(errors.AssertionFailedf("unsupported type %s", typ))
 		}
@@ -534,7 +550,7 @@ func runDistinctBenchmarks(
 					// case.
 					continue
 				}
-				for _, typ := range []*types.T{types.Int, types.Bytes} {
+				for _, typ := range []*types.T{types.Int, types.Bytes, types.Jsonb} {
 					typs := make([]*types.T, nCols)
 					cols := make([]coldata.Vec, nCols)
 					for i := range typs {
@@ -576,6 +592,12 @@ func runDistinctBenchmarks(
 								newBytes := cols[colIdx].Bytes()
 								for i := 0; i < nRows; i++ {
 									newBytes.Set(i, oldBytes.Get(order[i]))
+								}
+							} else if typs[colIdx] == types.Jsonb {
+								oldJsons := oldCol.JSON()
+								newJsons := cols[colIdx].JSON()
+								for i := 0; i < nRows; i++ {
+									newJsons.Set(i, oldJsons.Get(order[i]))
 								}
 							} else {
 								colexecerror.InternalError(errors.AssertionFailedf("unsupported type %s", typs[colIdx]))

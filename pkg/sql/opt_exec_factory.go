@@ -1822,6 +1822,7 @@ func (ef *execFactory) ConstructCreateView(
 	deps opt.SchemaDeps,
 	typeDeps opt.SchemaTypeDeps,
 	withData bool,
+	joinIndex bool,
 ) (exec.Node, error) {
 
 	if err := checkSchemaChangeEnabled(
@@ -1849,6 +1850,7 @@ func (ef *execFactory) ConstructCreateView(
 		planDeps:     planDeps,
 		typeDeps:     typeDepSet,
 		withData:     withData,
+		joinIndex:    joinIndex,
 	}, nil
 }
 

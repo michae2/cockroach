@@ -1036,6 +1036,7 @@ func (e *distSQLSpecExecFactory) ConstructCreateView(
 	deps opt.SchemaDeps,
 	typeDeps opt.SchemaTypeDeps,
 	withData bool,
+	joinIndex bool,
 ) (exec.Node, error) {
 	return nil, unimplemented.NewWithIssue(47473, "experimental opt-driven distsql planning: create view")
 }

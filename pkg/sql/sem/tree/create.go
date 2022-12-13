@@ -1950,28 +1950,33 @@ type CreateView struct {
 	Replace      bool
 	Materialized bool
 	WithData     bool
+	JoinIndex    bool
 }
 
 // Format implements the NodeFormatter interface.
 func (node *CreateView) Format(ctx *FmtCtx) {
 	ctx.WriteString("CREATE ")
 
-	if node.Replace {
-		ctx.WriteString("OR REPLACE ")
-	}
+	if node.JoinIndex {
+		ctx.WriteString("JOIN INDEX ")
+	} else {
+		if node.Replace {
+			ctx.WriteString("OR REPLACE ")
+		}
 
-	if node.Persistence == PersistenceTemporary {
-		ctx.WriteString("TEMPORARY ")
-	}
+		if node.Persistence == PersistenceTemporary {
+			ctx.WriteString("TEMPORARY ")
+		}
 
-	if node.Materialized {
-		ctx.WriteString("MATERIALIZED ")
-	}
+		if node.Materialized {
+			ctx.WriteString("MATERIALIZED ")
+		}
 
-	ctx.WriteString("VIEW ")
+		ctx.WriteString("VIEW ")
 
-	if node.IfNotExists {
-		ctx.WriteString("IF NOT EXISTS ")
+		if node.IfNotExists {
+			ctx.WriteString("IF NOT EXISTS ")
+		}
 	}
 	ctx.FormatNode(&node.Name)
 
@@ -1984,10 +1989,12 @@ func (node *CreateView) Format(ctx *FmtCtx) {
 
 	ctx.WriteString(" AS ")
 	ctx.FormatNode(node.AsSource)
-	if node.Materialized && node.WithData {
-		ctx.WriteString(" WITH DATA")
-	} else if node.Materialized && !node.WithData {
-		ctx.WriteString(" WITH NO DATA")
+	if !node.JoinIndex {
+		if node.Materialized && node.WithData {
+			ctx.WriteString(" WITH DATA")
+		} else if node.Materialized && !node.WithData {
+			ctx.WriteString(" WITH NO DATA")
+		}
 	}
 }
 

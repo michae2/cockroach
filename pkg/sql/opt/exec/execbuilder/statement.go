@@ -70,6 +70,7 @@ func (b *Builder) buildCreateView(cv *memo.CreateViewExpr) (execPlan, error) {
 		cv.Deps,
 		cv.TypeDeps,
 		cv.WithData,
+		cv.JoinIndex,
 	)
 	return execPlan{root: root}, err
 }

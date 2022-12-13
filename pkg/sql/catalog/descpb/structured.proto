@@ -965,6 +965,7 @@ message TableDescriptor {
   // RefreshViewRequired indicates if the materialized view needs to be refreshed
   // prior to access.
   optional bool refresh_view_required = 53 [(gogoproto.nullable) = false];
+  optional bool is_join_index = 55 [(gogoproto.nullable) = false];
   // The IDs of all relations that this depends on.
   // Only ever populated if this descriptor is for a view.
   repeated uint32 dependsOn = 25 [(gogoproto.customname) = "DependsOn",
@@ -1172,7 +1173,7 @@ message TableDescriptor {
   // This field is non zero if this table is offline during an import.
   optional int64 import_start_wall_time = 54 [(gogoproto.nullable) = false, (gogoproto.customname) = "ImportStartWallTime"];
 
-  // Next ID: 55
+  // Next ID: 56
 }
 
 // SurvivalGoal is the survival goal for a database.

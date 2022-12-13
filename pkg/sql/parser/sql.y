@@ -9520,6 +9520,18 @@ create_view_stmt:
       WithData: $11.bool(),
     }
   }
+| CREATE JOIN INDEX view_name opt_column_list AS select_stmt
+  {
+    name := $4.unresolvedObjectName().ToTableName()
+    $$.val = &tree.CreateView{
+      Name: name,
+      ColumnNames: $5.nameList(),
+      AsSource: $7.slct(),
+      Materialized: true,
+      WithData: true,
+      JoinIndex: true,
+    }
+  }
 | CREATE opt_temp opt_view_recursive VIEW error // SHOW HELP: CREATE VIEW
 
 opt_with_data:

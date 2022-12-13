@@ -97,6 +97,7 @@ func (b *Builder) buildCreateView(cv *tree.CreateView, inScope *scope) (outScope
 			Deps:         b.schemaDeps,
 			TypeDeps:     b.schemaTypeDeps,
 			WithData:     cv.WithData,
+			JoinIndex:    cv.JoinIndex,
 		},
 	)
 	return outScope

@@ -60,6 +60,8 @@ define CreateViewPrivate {
     # WithData indicates if the materialized view is populated
     # with data upon creation.
     WithData bool
+
+    JoinIndex bool
 }
 
 # CreateFunction represents a CREATE FUNCTION statement.

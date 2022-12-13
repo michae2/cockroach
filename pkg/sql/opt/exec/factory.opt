@@ -624,6 +624,7 @@ define CreateView {
     deps opt.SchemaDeps
     typeDeps opt.SchemaTypeDeps
     withData bool
+    joinIndex bool
 }
 
 # SequenceSelect implements a scan of a sequence as a data source.

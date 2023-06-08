@@ -589,12 +589,25 @@ func (rf *Fetcher) StartInconsistentScan(
 
 	txnTimestamp := initialTimestamp
 	txnStartTime := timeutil.Now()
-	if txnStartTime.Sub(txnTimestamp.GoTime()) >= maxTimestampAge {
-		return errors.Errorf(
-			"AS OF SYSTEM TIME: cannot specify timestamp older than %s for this operation",
-			maxTimestampAge,
-		)
+	// what if instead of this error we increase txn timestamp?
+	// should we keep this for manual stats runs?
+	/*
+		if txnStartTime.Sub(txnTimestamp.GoTime()) >= maxTimestampAge {
+			return errors.Errorf(
+				"AS OF SYSTEM TIME: cannot specify timestamp older than %s for this operation",
+				maxTimestampAge,
+			)
+		}
+	*/
+
+	// could add a sleep to wait out maxtimestampage for testing
+
+	if txnStartTime.Sub(txnTimestamp.GoTime()) > maxTimestampAge {
+		//txnTimestamp = txnTimestamp.Add(now.Sub(txnStartTime).Nanoseconds(), 0)
+		txnTimestamp = hlc.Timestamp{}.Add(txnStartTime.Add(-maxTimestampAge).UnixNano(), 0)
+		fmt.Println("yay")
 	}
+
 	txn := kv.NewTxnWithSteppingEnabled(ctx, db, 0 /* gatewayNodeID */, qualityOfService)
 	if err := txn.SetFixedTimestamp(ctx, txnTimestamp); err != nil {
 		return err
@@ -619,6 +632,7 @@ func (rf *Fetcher) StartInconsistentScan(
 
 			if log.V(1) {
 				log.Infof(ctx, "bumped inconsistent scan timestamp to %v", txnTimestamp)
+				fmt.Printf("bumped inconsistent scan timestamp to %v\n", txnTimestamp)
 			}
 		}
 

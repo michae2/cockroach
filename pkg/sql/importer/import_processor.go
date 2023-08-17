@@ -180,6 +180,7 @@ func newReadImportDataProcessor(
 
 // Start is part of the RowSource interface.
 func (idp *readImportDataProcessor) Start(ctx context.Context) {
+	fmt.Printf("import %v starting readImportDataProcessor\n", idp.spec.JobID)
 	ctx = logtags.AddTag(ctx, "job", idp.spec.JobID)
 	ctx = idp.StartInternal(ctx, readImportDataProcessorName)
 
@@ -187,9 +188,11 @@ func (idp *readImportDataProcessor) Start(ctx context.Context) {
 	idp.cancel = cancel
 	idp.wg = ctxgroup.WithContext(grpCtx)
 	idp.wg.GoCtx(func(ctx context.Context) error {
+		fmt.Printf("import %v starting runImport goroutine\n", idp.spec.JobID)
 		defer close(idp.progCh)
 		idp.summary, idp.importErr = runImport(ctx, idp.flowCtx, &idp.spec, idp.progCh,
 			idp.seqChunkProvider)
+		fmt.Printf("import %v finished runImport goroutine: %v\n", idp.spec.JobID, idp.importErr)
 		return nil
 	})
 }
@@ -204,6 +207,8 @@ func (idp *readImportDataProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.Pro
 		p := prog
 		return nil, &execinfrapb.ProducerMetadata{BulkProcessorProgress: &p}
 	}
+
+	fmt.Printf("import %v progress finished with %v:\n%v\n", idp.spec.JobID, idp.importErr, idp)
 
 	if idp.importErr != nil {
 		idp.MoveToDraining(idp.importErr)

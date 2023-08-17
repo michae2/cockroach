@@ -5417,9 +5417,9 @@ func TestImportWorkerFailure(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderStressWithIssue(t, 108547, "flaky test")
-	skip.UnderDeadlockWithIssue(t, 108547, "flaky test")
-	skip.UnderRaceWithIssue(t, 108547, "flaky test")
+	//skip.UnderStressWithIssue(t, 108547, "flaky test")
+	//skip.UnderDeadlockWithIssue(t, 108547, "flaky test")
+	//skip.UnderRaceWithIssue(t, 108547, "flaky test")
 
 	allowResponse := make(chan struct{})
 	params := base.TestClusterArgs{}
@@ -5462,7 +5462,9 @@ func TestImportWorkerFailure(t *testing.T) {
 		t.Fatalf("%s: query returned before expected: %s", err, query)
 	}
 	var jobID jobspb.JobID
-	sqlDB.QueryRow(t, `SELECT id FROM system.jobs ORDER BY created DESC LIMIT 1`).Scan(&jobID)
+	var jobType string
+	sqlDB.QueryRow(t, `SELECT id, job_type FROM system.jobs ORDER BY created DESC LIMIT 1`).Scan(&jobID, &jobType)
+	t.Logf("job %v %v", jobID, jobType)
 
 	// Shut down a node.
 	tc.StopServer(1)

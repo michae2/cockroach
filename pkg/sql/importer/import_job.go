@@ -1279,6 +1279,15 @@ func ingestWithRetry(
 			break
 		}
 
+		fmt.Printf("distImport failed with %v\n", err)
+		// do we simply need to add back this thing, which was removed by https://github.com/cockroachdb/cockroach/commit/768aa229cdb17f329d2af2e722f7dd4584c21954
+		// // Check if this was a context canceled error and restart if it was.
+		// if s, ok := status.FromError(errors.UnwrapAll(err)); ok {
+		// if s.Code() == codes.Canceled && s.Message() == context.Canceled.Error() {
+		//	return roachpb.BulkOpSummary{}, jobs.NewRetryJobError("node failure")
+		// }
+		// }
+
 		if errors.HasType(err, &kvpb.InsufficientSpaceError{}) {
 			return res, jobs.MarkPauseRequestError(errors.UnwrapAll(err))
 		}
@@ -1306,6 +1315,7 @@ func ingestWithRetry(
 		} else {
 			job = reloadedJob
 		}
+		fmt.Printf("retrying job after %v\n", err)
 		log.Warningf(ctx, "encountered retryable error: %+v", err)
 	}
 

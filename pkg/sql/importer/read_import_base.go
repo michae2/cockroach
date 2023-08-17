@@ -58,6 +58,8 @@ func runImport(
 	// Used to send ingested import rows to the KV layer.
 	kvCh := make(chan row.KVBatch, 10)
 
+	fmt.Printf("runImport URIs %v\n", spec.Uri)
+
 	// Install type metadata in all of the import tables.
 	spec = protoutil.Clone(spec).(*execinfrapb.ReadImportDataSpec)
 	importResolver := newImportTypeResolver(spec.Types)
@@ -92,6 +94,7 @@ func runImport(
 		defer span.Finish()
 		var inputs map[int32]string
 		if spec.ResumePos != nil {
+			fmt.Printf("! ResumePos: %v, URIs: %v\n", spec.ResumePos, spec.Uri)
 			// Filter out files that were completely processed.
 			inputs = make(map[int32]string)
 			for id, name := range spec.Uri {
@@ -103,8 +106,10 @@ func runImport(
 			inputs = spec.Uri
 		}
 
-		return conv.readFiles(ctx, inputs, spec.ResumePos, spec.Format, flowCtx.Cfg.ExternalStorage,
+		err := conv.readFiles(ctx, inputs, spec.ResumePos, spec.Format, flowCtx.Cfg.ExternalStorage,
 			spec.User())
+		fmt.Printf("! readFiles error: %v\n", err)
+		return err
 	})
 
 	// Ingest the KVs that the producer group emitted to the chan and the row result
@@ -113,6 +118,7 @@ func runImport(
 	group.GoCtx(func(ctx context.Context) error {
 		summary, err = ingestKvs(ctx, flowCtx, spec, progCh, kvCh)
 		if err != nil {
+			fmt.Printf("! ingest error: %v\n", err)
 			return err
 		}
 		var prog execinfrapb.RemoteProducerMetadata_BulkProcessorProgress
@@ -122,15 +128,18 @@ func runImport(
 			prog.CompletedFraction[i] = 1.0
 			prog.ResumePos[i] = math.MaxInt64
 		}
+		fmt.Printf("! finished ingesting:\n! counts: %v\n! resumepos: %v\n", summary.EntryCounts, prog.ResumePos)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case progCh <- prog:
+			fmt.Println("! wrote progress")
 			return nil
 		}
 	})
 
 	if err = group.Wait(); err != nil {
+		fmt.Printf("! ingest wait group err: %v\n", err)
 		return nil, err
 	}
 

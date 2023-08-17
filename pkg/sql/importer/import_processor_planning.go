@@ -12,6 +12,7 @@ package importer
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"sync/atomic"
@@ -247,11 +248,14 @@ func distImport(
 		for {
 			select {
 			case <-stopProgress:
+				fmt.Printf("err from stopProgress: <nil>\n")
 				return nil
 			case <-done:
+				fmt.Printf("err from ctx: %v\n", ctx.Err())
 				return ctx.Err()
 			case <-tick.C:
 				if err := updateJobProgress(); err != nil {
+					fmt.Printf("err from updateJobProgress: %v\n", err)
 					return err
 				}
 
@@ -275,15 +279,18 @@ func distImport(
 		// Copy the evalCtx, as dsp.Run() might change it.
 		evalCtxCopy := *evalCtx
 		dsp.Run(ctx, planCtx, nil, p, recv, &evalCtxCopy, testingKnobs.onSetupFinish)
+		fmt.Printf("err from dsp.Run: %v\n", rowResultWriter.Err())
 		return rowResultWriter.Err()
 	})
 
 	g.GoCtx(replanChecker)
 
 	if err := g.Wait(); err != nil {
+		fmt.Printf("err from waitgroup: %+v\n", err)
 		return kvpb.BulkOpSummary{}, err
 	}
 
+	fmt.Printf("err from waitgroup: <nil>\n")
 	return res, nil
 }
 

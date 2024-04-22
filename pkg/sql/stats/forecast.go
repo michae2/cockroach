@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"slices"
 	"strconv"
 	"time"
 
@@ -45,11 +44,34 @@ var UseStatisticsForecasts = settings.RegisterBoolSetting(
 // required to produce a statistics forecast. Forecasts based on 1 or 2
 // observations will always have R² = 1 (perfect goodness of fit) regardless of
 // the accuracy of the forecast.
-const minObservationsForForecast = 3
+var minObservationsForForecast = settings.RegisterIntSetting(
+	settings.TenantWritable,
+	"sql.stats.forecasts.min_observations",
+	"the mimimum number of observed statistics required to produce a statistics forecast",
+	3,
+	func(v int64) error {
+		if v < 1 || v > math.MaxInt {
+			return errors.Errorf("expected value in range [%d, %d], got %d", 1, math.MaxInt, v)
+		}
+		return nil
+	},
+).WithPublic()
 
 // minGoodnessOfFit is the minimum R² (goodness of fit) measurement all
 // predictive models in a forecast must have for us to use the forecast.
-const minGoodnessOfFit = 0.95
+var minGoodnessOfFit = settings.RegisterFloatSetting(
+	settings.TenantWritable,
+	"sql.stats.forecasts.min_goodness_of_fit",
+	"the minimum R² (goodness of fit) measurement required from all predictive models to use a "+
+		"forecast",
+	0.95,
+	func(v float64) error {
+		if v < 0 || v > 1 {
+			return errors.Errorf("expected value in range [%f, %f], got %f", 0.0, 1.0, v)
+		}
+		return nil
+	},
+).WithPublic()
 
 // maxDecrease is the minimum ratio of a prediction to the lowest prior
 // observation that we allow. Predictions falling below this will be clamped to
@@ -59,7 +81,19 @@ const minGoodnessOfFit = 0.95
 //
 // This happens to be the same as unknownFilterSelectivity, but there's not a
 // strong theoretical reason for it.
-const maxDecrease = 1.0 / 3.0
+var maxDecrease = settings.RegisterFloatSetting(
+	settings.TenantWritable,
+	"sql.stats.forecasts.max_decrease",
+	"the most a prediction is allowed to decrease, expressed as the minimum ratio of the prediction "+
+		"to the lowest prior observation",
+	1.0/3.0,
+	func(v float64) error {
+		if v < 0 || v > 1 {
+			return errors.Errorf("expected value in range [%f, %f], got %f", 0.0, 1.0, v)
+		}
+		return nil
+	},
+).WithPublic()
 
 // TODO(michae2): Consider whether we need a corresponding maxIncrease.
 
@@ -125,7 +159,9 @@ func ForecastTableStatistics(
 		latest := observedByCols[colKey][0].CreatedAt
 		at := latest.Add(avgRefresh)
 
-		forecast, err := forecastColumnStatistics(ctx, sv, observedByCols[colKey], at, minGoodnessOfFit)
+		forecast, err := forecastColumnStatistics(
+			ctx, sv, observedByCols[colKey], at, minGoodnessOfFit.Get(sv),
+		)
 		if err != nil {
 			log.VEventf(
 				ctx, 2, "could not forecast statistics for table %v columns %s: %v",
@@ -163,7 +199,7 @@ func forecastColumnStatistics(
 	at time.Time,
 	minRequiredFit float64,
 ) (forecast *TableStatistic, err error) {
-	if len(observed) < minObservationsForForecast {
+	if len(observed) < int(minObservationsForForecast.Get(sv)) {
 		return nil, errors.New("not enough observations to forecast statistics")
 	}
 
@@ -215,7 +251,13 @@ func forecastColumnStatistics(
 		// over-estimate counts, so we pick a very conservative lowerBound of the
 		// prior lowest observation times maxDecrease to avoid prematurely
 		// estimating zero rows for downward-trending statistics.
-		lowerBound := math.Round(slices.Min(y) * maxDecrease)
+		lowestObservation := math.MaxFloat64
+		for _, yᵢ := range y {
+			if yᵢ < lowestObservation {
+				lowestObservation = yᵢ
+			}
+		}
+		lowerBound := math.Round(lowestObservation * maxDecrease.Get(sv))
 		lowerBound = math.Max(0, lowerBound)
 		if yₙ < lowerBound {
 			return lowerBound, nil
@@ -291,7 +333,7 @@ func forecastColumnStatistics(
 	// histogram. NOTE: If any of the observed histograms were for inverted
 	// indexes this will produce an incorrect histogram.
 	if observed[0].HistogramData != nil && observed[0].HistogramData.ColumnType != nil {
-		hist, err := predictHistogram(ctx, observed, forecastAt, minRequiredFit, nonNullRowCount)
+		hist, err := predictHistogram(ctx, sv, observed, forecastAt, minRequiredFit, nonNullRowCount)
 		if err != nil {
 			// If we did not successfully predict a histogram then copy the latest
 			// histogram so we can adjust it.
@@ -377,6 +419,7 @@ func forecastColumnStatistics(
 // predictHistogram tries to predict the histogram at forecast time.
 func predictHistogram(
 	ctx context.Context,
+	sv *settings.Values,
 	observed []*TableStatistic,
 	forecastAt float64,
 	minRequiredFit float64,
@@ -422,7 +465,7 @@ func predictHistogram(
 		quantiles = append(quantiles, q)
 	}
 
-	if len(quantiles) < minObservationsForForecast {
+	if len(quantiles) < int(minObservationsForForecast.Get(sv)) {
 		return histogram{}, errors.New("not enough observations to forecast histogram")
 	}
 

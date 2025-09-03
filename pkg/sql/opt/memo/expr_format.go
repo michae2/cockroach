@@ -917,6 +917,9 @@ func (f *ExprFmtCtx) formatRelational(e RelExpr, tp treeprinter.Node) {
 			if cost.Flags.FullScanPenalty {
 				b.WriteString(" full-scan-penalty")
 			}
+			if cost.Flags.PheromoneMismatchPenalty {
+				b.WriteString(" pheromone-mismatch-penalty")
+			}
 			if cost.Flags.HugeCostPenalty {
 				b.WriteString(" huge-cost-penalty")
 			}
@@ -980,6 +983,10 @@ func (f *ExprFmtCtx) formatRelational(e RelExpr, tp treeprinter.Node) {
 		}
 		if distribute, ok := e.(*DistributeExpr); ok {
 			tp.Childf("input distribution: %s", distribute.Input.ProvidedPhysical().Distribution.String())
+		}
+
+		if !required.Pheromone.Any() {
+			tp.Childf("pheromone: %s", required.Pheromone.String())
 		}
 	}
 

@@ -637,6 +637,11 @@ func (c *coster) ComputeCost(candidate memo.RelExpr, required *physical.Required
 		}
 	}
 
+	// will checking matches here work for scalar expressions?
+	if !required.Pheromone.Any() && !required.Pheromone.Matches(candidate) {
+		cost.Flags.PheromoneMismatchPenalty = true
+	}
+
 	if !cost.Less(memo.MaxCost) {
 		// Optsteps uses MaxCost to suppress nodes in the memo. When a node with
 		// MaxCost is added to the memo, it can lead to an obscure crash with an

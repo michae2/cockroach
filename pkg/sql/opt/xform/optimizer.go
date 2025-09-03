@@ -690,6 +690,25 @@ func (o *Optimizer) enforceProps(
 	// stripped by recursively optimizing the group with successively fewer
 	// properties. The properties are stripped off in a heuristic order, from
 	// least likely to be expensive to enforce to most likely.
+
+	if !required.Pheromone.Any() && !required.Pheromone.None() {
+		// try with the first alternate pheromone removed
+		// if there are no alternate pheromones try with pheromone none
+		// (or try with Any but flag with mismatch? that might make more sense)
+		//
+		// this will mean that plans flagged with the mismatch penalty might reach
+		// the top with a mixture of matches and mismatches. so at the top we will
+		// need to re-optimize everything without pheromones (and log something?)
+
+		newProps := *required
+		newProps.Pheromone = required.Pheromone.Tail()
+		innerRequired := o.mem.InternPhysicalProps(&newProps)
+		innerState := o.optimizeGroup(member, innerRequired)
+		fullyOptimized = innerState.fullyOptimized
+		_ = o.ratchetCost(state, innerState.best, innerState.cost)
+		return fullyOptimized
+	}
+
 	if !required.Distribution.Any() && member.Op() != opt.ExplainOp {
 		enforcer := &memo.DistributeExpr{Input: member}
 		getEnforcer := func() memo.RelExpr {

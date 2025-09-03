@@ -29,9 +29,10 @@ type Cost struct {
 var MaxCost = Cost{
 	C: math.Inf(+1),
 	Flags: CostFlags{
-		FullScanPenalty:      true,
-		HugeCostPenalty:      true,
-		UnboundedCardinality: true,
+		FullScanPenalty:          true,
+		PheromoneMismatchPenalty: true,
+		HugeCostPenalty:          true,
+		UnboundedCardinality:     true,
 	},
 }
 
@@ -85,6 +86,8 @@ type CostFlags struct {
 	// penalized, indicating that a full scan should only be used if no other plan
 	// is possible.
 	FullScanPenalty bool
+	// PheromoneMismatchPenalty
+	PheromoneMismatchPenalty bool
 	// HugeCostPenalty is true if a plan should be avoided at all costs. This is
 	// used when the optimizer is forced to use a particular plan, and will error
 	// if it cannot be used.
@@ -104,6 +107,9 @@ func (c CostFlags) Less(other CostFlags) bool {
 	if c.HugeCostPenalty != other.HugeCostPenalty {
 		return !c.HugeCostPenalty
 	}
+	if c.PheromoneMismatchPenalty != other.PheromoneMismatchPenalty {
+		return !c.PheromoneMismatchPenalty
+	}
 	if c.FullScanPenalty != other.FullScanPenalty {
 		return !c.FullScanPenalty
 	}
@@ -116,11 +122,13 @@ func (c CostFlags) Less(other CostFlags) bool {
 // Add adds the other flags to these flags.
 func (c *CostFlags) Add(other CostFlags) {
 	c.FullScanPenalty = c.FullScanPenalty || other.FullScanPenalty
+	c.PheromoneMismatchPenalty = c.PheromoneMismatchPenalty || other.PheromoneMismatchPenalty
 	c.HugeCostPenalty = c.HugeCostPenalty || other.HugeCostPenalty
 	c.UnboundedCardinality = c.UnboundedCardinality || other.UnboundedCardinality
 }
 
 // Empty returns true if these flags are empty.
 func (c CostFlags) Empty() bool {
-	return !c.FullScanPenalty && !c.HugeCostPenalty && !c.UnboundedCardinality
+	return !c.FullScanPenalty && !c.PheromoneMismatchPenalty && !c.HugeCostPenalty &&
+		!c.UnboundedCardinality
 }

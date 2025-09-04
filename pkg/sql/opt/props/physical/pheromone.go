@@ -6,10 +6,13 @@
 package physical
 
 import (
+	"bufio"
 	"bytes"
+	"io"
 	"strconv"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
+	"github.com/cockroachdb/errors"
 )
 
 type Pheromone struct {
@@ -216,7 +219,228 @@ func (p Pheromone) Child(nth int) Pheromone {
 	return NonePheromone
 }
 
-func (p Pheromone) Format(b *bytes.Buffer) {
+func ParsePheromone(r io.Reader) (Pheromone, error) {
+	br := bufio.NewReader(r)
+	if buf, err := br.Peek(12); err == nil && string(buf) == "initial: any" {
+		return AnyPheromone, nil
+	}
+	if buf, err := br.Peek(13); err == nil && string(buf) == "initial: none" {
+		return NonePheromone, nil
+	}
+
+	scanner := bufio.NewScanner(r)
+	scanner.Split(parsePheromoneSplitFunc)
+
+	scanLookahead := func() error {
+		if !scanner.Scan() {
+			return errors.Newf("")
+		}
+		return nil
+	}
+
+	scanTokens := func(tokens ...string) error {
+		for _, token := range tokens {
+			if !scanner.Scan() {
+				return errors.Newf("")
+			}
+			if scanner.Text() != token {
+				return errors.Newf("")
+			}
+		}
+		return nil
+	}
+
+	scanOpName := func() (opt.Operator, error) {
+		if !scanner.Scan() {
+			return opt.UnknownOp, errors.Newf("")
+		}
+		op, err := opt.OperatorFromString(scanner.Text())
+		if err != nil {
+			return opt.UnknownOp, errors.Newf("")
+		}
+		return op, nil
+	}
+
+	refs := make(map[string]pheromoneTerm)
+	rules := make(map[string]pheromoneTerm)
+
+	var parseExpr func() (pheromoneTerm, error)
+	var parseNonterminal func() (pheromoneTerm, error)
+	var parseProductionRule func() (pheromoneTerm, error)
+
+	parseExpr = func() (pheromoneTerm, error) {
+		op, err := scanOpName()
+		if err != nil {
+			return nil, err
+		}
+		pe := &pheromoneExpr{op: op}
+
+		if err := scanLookahead(); err != nil {
+			return nil, err
+		}
+	ChildLoop:
+		for {
+			switch scanner.Text() {
+			case ":", ";", "|":
+				return nil, errors.Newf("")
+			case "(":
+				child, err := parseExpr()
+				if err != nil {
+					return nil, err
+				}
+				pe.children = append(pe.children, child)
+			case ")":
+				break ChildLoop
+			default:
+				child, err := parseNonterminal()
+				if err != nil {
+					return nil, err
+				}
+				pe.children = append(pe.children, child)
+			}
+			if err := scanLookahead(); err != nil {
+				return nil, err
+			}
+		}
+		return pe, nil
+	}
+
+	parseNonterminal = func() (pheromoneTerm, error) {
+		switch token := scanner.Text(); token {
+		case ":", ";", "|", "(", ")":
+			return nil, errors.Newf("")
+		case "any":
+			return anyPheromoneTerm, nil
+		case "none":
+			return nonePheromoneTerm, nil
+		default:
+			if token[0] == '_' {
+				return nil, errors.Newf("nonterminal cannot start with _")
+			}
+			rule, ok := rules[token]
+			if !ok {
+				rule, ok = refs[token]
+				if !ok {
+					rule = &pheromoneProduction{name: token}
+					refs[token] = rule
+				}
+			}
+			return rule, nil
+		}
+	}
+
+	parseProductionRule = func() (pheromoneTerm, error) {
+		var pp *pheromoneProduction
+		switch token := scanner.Text(); token {
+		case ":", ";", "|", "(", ")", "any", "none":
+			return nil, errors.Newf("cannot use %s as nonterminal", token)
+		default:
+			if token[0] == '_' {
+				return nil, errors.Newf("nonterminal cannot start with _")
+			}
+			if _, ok := rules[token]; ok {
+				return nil, errors.Newf("duplicate nonterminal")
+			}
+			rule, ok := refs[token]
+			if ok {
+				pp = rule.(*pheromoneProduction)
+			} else {
+				pp = &pheromoneProduction{name: token}
+				rule = pp
+			}
+			rules[token] = rule
+		}
+
+		if err := scanTokens(":"); err != nil {
+			return nil, err
+		}
+		if err := scanLookahead(); err != nil {
+			return nil, err
+		}
+	AlternateLoop:
+		for {
+			switch scanner.Text() {
+			case ":", ";", "|", ")":
+				return nil, errors.Newf("")
+			case "(":
+				alt, err := parseExpr()
+				if err != nil {
+					return nil, err
+				}
+				pp.alternates = append(pp.alternates, alt)
+			case "none":
+				// Skip over none.
+			default:
+				alt, err := parseNonterminal()
+				if err != nil {
+					return nil, err
+				}
+				pp.alternates = append(pp.alternates, alt)
+			}
+			if err := scanTokens("|", ";"); err != nil {
+				return nil, err
+			}
+			if scanner.Text() == ";" {
+				break AlternateLoop
+			}
+			if err := scanLookahead(); err != nil {
+				return nil, err
+			}
+		}
+		return pp, nil
+	}
+
+	for scanner.Scan() {
+		_, err := parseProductionRule()
+		if err != nil {
+			return Pheromone{}, err
+		}
+	}
+
+	for name, ref := range refs {
+		rule, ok := rules[name]
+		if !ok || rule != ref {
+			return Pheromone{}, errors.Newf("missing rule")
+		}
+	}
+	initial, ok := rules["initial"]
+	if !ok {
+		return Pheromone{}, errors.Newf("missing rule")
+	}
+	return Pheromone{initial}, nil
+}
+
+func parsePheromoneSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	advance, token, err = bufio.ScanWords(data, atEOF)
+	if err != nil {
+		return 0, nil, err
+	}
+	if advance == 0 {
+		// Need more data or at EOF.
+		return 0, nil, nil
+	}
+	if len(token) == 0 {
+		// Only consumed whitespace, tell scanner to continue.
+		return advance, nil, nil
+	}
+	// If the first byte is punctuation, emit it.
+	switch token[0] {
+	case ':', ';', '|', '(', ')':
+		whitespace := advance - len(token)
+		return whitespace + 1, token[0:], nil
+	}
+	// Emit up to the first punctuation mark.
+	if i := bytes.IndexAny(token, ":;|()"); i >= 0 {
+		whitespace := advance - len(token)
+		return whitespace + i, token[:i], nil
+	}
+	return
+}
+
+func (p Pheromone) formatPretty(b *bytes.Buffer, pretty bool) {
+	if pretty {
+		defer b.WriteRune('\n')
+	}
 	if p.initial == nil {
 		b.WriteString("initial: any")
 		return
@@ -232,7 +456,7 @@ func (p Pheromone) Format(b *bytes.Buffer) {
 	for i, rule := range rules {
 		pp := rule.(*pheromoneProduction)
 		if pp.name == "" {
-			names[pp] = "p" + strconv.Itoa(i)
+			names[pp] = "_" + strconv.Itoa(i)
 		} else {
 			names[pp] = pp.name
 		}
@@ -266,7 +490,12 @@ func (p Pheromone) Format(b *bytes.Buffer) {
 	format(p.initial)
 	for _, rule := range rules {
 		pp := rule.(*pheromoneProduction)
-		b.WriteString("; ")
+		b.WriteRune(';')
+		if pretty {
+			b.WriteRune('\n')
+		} else {
+			b.WriteRune(' ')
+		}
 		b.WriteString(names[pp])
 		if len(pp.alternates) == 0 {
 			b.WriteString(": none")
@@ -281,6 +510,10 @@ func (p Pheromone) Format(b *bytes.Buffer) {
 			}
 		}
 	}
+}
+
+func (p Pheromone) Format(b *bytes.Buffer) {
+	p.formatPretty(b, false /* pretty */)
 }
 
 func (p Pheromone) String() string {

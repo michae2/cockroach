@@ -8,7 +8,9 @@ package physical
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io"
+	"slices"
 	"strconv"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
@@ -231,32 +233,37 @@ func ParsePheromone(r io.Reader) (Pheromone, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Split(parsePheromoneSplitFunc)
 
-	scanLookahead := func() error {
+	scanLookahead := func(errHint string) error {
 		if !scanner.Scan() {
-			return errors.Newf("")
+			err := scanner.Err()
+			if err == nil {
+				err = io.ErrUnexpectedEOF
+			}
+			return errors.Wrapf(err, "in %s", errHint)
 		}
 		return nil
 	}
 
-	scanTokens := func(tokens ...string) error {
-		for _, token := range tokens {
-			if !scanner.Scan() {
-				return errors.Newf("")
-			}
-			if scanner.Text() != token {
-				return errors.Newf("")
-			}
+	scanTokens := func(errHint string, tokens ...string) error {
+		if err := scanLookahead(errHint); err != nil {
+			return err
+		}
+		if !slices.Contains(tokens, scanner.Text()) {
+			return errors.Newf(
+				"in %s: expected one of %v: %q",
+				errHint, tokens, scanner.Text(),
+			)
 		}
 		return nil
 	}
 
-	scanOpName := func() (opt.Operator, error) {
-		if !scanner.Scan() {
-			return opt.UnknownOp, errors.Newf("")
+	scanOpName := func(errHint string) (opt.Operator, error) {
+		if err := scanLookahead(errHint); err != nil {
+			return opt.UnknownOp, err
 		}
 		op, err := opt.OperatorFromString(scanner.Text())
 		if err != nil {
-			return opt.UnknownOp, errors.Newf("")
+			return opt.UnknownOp, errors.Wrapf(err, "in %s: %q", errHint, scanner.Text())
 		}
 		return op, nil
 	}
@@ -264,27 +271,27 @@ func ParsePheromone(r io.Reader) (Pheromone, error) {
 	refs := make(map[string]pheromoneTerm)
 	rules := make(map[string]pheromoneTerm)
 
-	var parseExpr func() (pheromoneTerm, error)
-	var parseNonterminal func() (pheromoneTerm, error)
+	var parseExpr func(string) (pheromoneTerm, error)
+	var parseNonterminal func(string) (pheromoneTerm, error)
 	var parseProductionRule func() (pheromoneTerm, error)
 
-	parseExpr = func() (pheromoneTerm, error) {
-		op, err := scanOpName()
+	parseExpr = func(ruleName string) (pheromoneTerm, error) {
+		op, err := scanOpName(ruleName)
 		if err != nil {
 			return nil, err
 		}
 		pe := &pheromoneExpr{op: op}
 
-		if err := scanLookahead(); err != nil {
+		if err := scanLookahead(ruleName); err != nil {
 			return nil, err
 		}
 	ChildLoop:
 		for {
-			switch scanner.Text() {
+			switch token := scanner.Text(); token {
 			case ":", ";", "|":
-				return nil, errors.Newf("")
+				return nil, errors.Newf("in %s: unexpected token: %q", ruleName, token)
 			case "(":
-				child, err := parseExpr()
+				child, err := parseExpr(ruleName)
 				if err != nil {
 					return nil, err
 				}
@@ -292,30 +299,30 @@ func ParsePheromone(r io.Reader) (Pheromone, error) {
 			case ")":
 				break ChildLoop
 			default:
-				child, err := parseNonterminal()
+				child, err := parseNonterminal(ruleName)
 				if err != nil {
 					return nil, err
 				}
 				pe.children = append(pe.children, child)
 			}
-			if err := scanLookahead(); err != nil {
+			if err := scanLookahead(ruleName); err != nil {
 				return nil, err
 			}
 		}
 		return pe, nil
 	}
 
-	parseNonterminal = func() (pheromoneTerm, error) {
+	parseNonterminal = func(ruleName string) (pheromoneTerm, error) {
 		switch token := scanner.Text(); token {
 		case ":", ";", "|", "(", ")":
-			return nil, errors.Newf("")
+			return nil, errors.Newf("in %s: unexpected token: %q", ruleName, token)
 		case "any":
 			return anyPheromoneTerm, nil
 		case "none":
 			return nonePheromoneTerm, nil
 		default:
 			if token[0] == '_' {
-				return nil, errors.Newf("nonterminal cannot start with _")
+				return nil, errors.Newf("in %s: nonterminal cannot start with _: %q", ruleName, token)
 			}
 			rule, ok := rules[token]
 			if !ok {
@@ -333,13 +340,13 @@ func ParsePheromone(r io.Reader) (Pheromone, error) {
 		var pp *pheromoneProduction
 		switch token := scanner.Text(); token {
 		case ":", ";", "|", "(", ")", "any", "none":
-			return nil, errors.Newf("cannot use %s as nonterminal", token)
+			return nil, errors.Newf("invalid nonterminal: %q", token)
 		default:
 			if token[0] == '_' {
-				return nil, errors.Newf("nonterminal cannot start with _")
+				return nil, errors.Newf("nonterminal cannot start with _: %q", token)
 			}
 			if _, ok := rules[token]; ok {
-				return nil, errors.Newf("duplicate nonterminal")
+				return nil, errors.Newf("duplicate nonterminal: %q", token)
 			}
 			rule, ok := refs[token]
 			if ok {
@@ -350,46 +357,50 @@ func ParsePheromone(r io.Reader) (Pheromone, error) {
 			}
 			rules[token] = rule
 		}
+		ruleName := fmt.Sprintf("production rule %q", pp.name)
 
-		if err := scanTokens(":"); err != nil {
+		if err := scanTokens(ruleName, ":"); err != nil {
 			return nil, err
 		}
-		if err := scanLookahead(); err != nil {
+		if err := scanLookahead(ruleName); err != nil {
 			return nil, err
 		}
 	AlternateLoop:
 		for {
-			switch scanner.Text() {
+			switch token := scanner.Text(); token {
 			case ":", ";", "|", ")":
-				return nil, errors.Newf("")
+				return nil, errors.Newf("in %s: unexpected token: %q", ruleName, token)
 			case "(":
-				alt, err := parseExpr()
+				alt, err := parseExpr(ruleName)
 				if err != nil {
 					return nil, err
 				}
 				pp.alternates = append(pp.alternates, alt)
 			case "none":
-				// Skip over none.
+				// Skip over none as an alternate because it is equivalent to the empty
+				// alternation list. (We cannot skip over it when parsing children in
+				// expressions, however.)
 			default:
-				alt, err := parseNonterminal()
+				alt, err := parseNonterminal(ruleName)
 				if err != nil {
 					return nil, err
 				}
 				pp.alternates = append(pp.alternates, alt)
 			}
-			if err := scanTokens("|", ";"); err != nil {
+			if err := scanTokens(ruleName, "|", ";"); err != nil {
 				return nil, err
 			}
 			if scanner.Text() == ";" {
 				break AlternateLoop
 			}
-			if err := scanLookahead(); err != nil {
+			if err := scanLookahead(ruleName); err != nil {
 				return nil, err
 			}
 		}
 		return pp, nil
 	}
 
+	// Parse a sequence of production rules.
 	for scanner.Scan() {
 		_, err := parseProductionRule()
 		if err != nil {
@@ -397,17 +408,27 @@ func ParsePheromone(r io.Reader) (Pheromone, error) {
 		}
 	}
 
+	// Check that each nonterminal also has an associated production rule.
 	for name, ref := range refs {
 		rule, ok := rules[name]
 		if !ok || rule != ref {
-			return Pheromone{}, errors.Newf("missing rule")
+			return Pheromone{}, errors.Newf("missing production rule for nonterminal: %q", name)
 		}
 	}
+
+	// Find the initial production rule.
 	initial, ok := rules["initial"]
 	if !ok {
-		return Pheromone{}, errors.Newf("missing rule")
+		return Pheromone{}, errors.Newf("missing initial production rule")
 	}
-	return Pheromone{initial}, nil
+	initialProd, ok := initial.(*pheromoneProduction)
+	if !ok || len(initialProd.alternates) > 1 {
+		return Pheromone{}, errors.Newf("initial production rule must have exactly one term")
+	}
+	if len(initialProd.alternates) == 0 {
+		return NonePheromone, nil
+	}
+	return Pheromone{initialProd.alternates[0]}, nil
 }
 
 func parsePheromoneSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err error) {
@@ -416,7 +437,7 @@ func parsePheromoneSplitFunc(data []byte, atEOF bool) (advance int, token []byte
 		return 0, nil, err
 	}
 	if advance == 0 {
-		// Need more data or at EOF.
+		// Need more data, or at EOF.
 		return 0, nil, nil
 	}
 	if len(token) == 0 {
@@ -488,9 +509,9 @@ func (p Pheromone) formatPretty(b *bytes.Buffer, pretty bool) {
 
 	b.WriteString("initial: ")
 	format(p.initial)
+	b.WriteRune(';')
 	for _, rule := range rules {
 		pp := rule.(*pheromoneProduction)
-		b.WriteRune(';')
 		if pretty {
 			b.WriteRune('\n')
 		} else {
@@ -509,6 +530,7 @@ func (p Pheromone) formatPretty(b *bytes.Buffer, pretty bool) {
 				format(alt)
 			}
 		}
+		b.WriteRune(';')
 	}
 }
 

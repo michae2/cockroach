@@ -74,5 +74,6 @@ pkg/testutils/serverutils/*_generated.go
 .DS_Store
 .idea/
 .vscode/
+__pycache__/
 CLAUDE.local.md
 .claude/*.local.*

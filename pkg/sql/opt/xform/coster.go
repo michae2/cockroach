@@ -638,9 +638,7 @@ func (c *coster) ComputeCost(candidate memo.RelExpr, required *physical.Required
 		cost.C /= 10
 	}
 
-	// Penalize expressions that don't match the PlanGram. This is a soft
-	// preference, not a hard constraint, so the optimizer can still choose a
-	// non-matching plan if it is otherwise much cheaper.
+	// Penalize expressions that don't match the PlanGram.
 	if plangram.VisibleToPlanGram(candidate) && !required.PlanGram.Matches(candidate) {
 		cost.Penalties |= memo.PlanGramMismatchPenalty
 	}

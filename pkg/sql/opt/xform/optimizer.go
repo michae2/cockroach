@@ -679,19 +679,22 @@ func (o *Optimizer) enforceProps(
 	// properties. The properties are stripped off in a heuristic order, from
 	// least likely to be expensive to enforce to most likely.
 
-	// If the PlanGram has alternates (i.e. the grammar node is a production
-	// with multiple rules), expand them by optimizing the group once per
-	// alternate. The coster can only match against a concrete PlanGram
-	// expression, so we must resolve the production here. Track which
-	// alternate won so setLowestCostTree can reconstruct the correct path.
-	if required.PlanGram.HasAlternates() {
+	// If the PlanGram has alternates (i.e. the current PlanGram term is a
+	// production with multiple rules), the coster cannot use the current PlanGram
+	// term to cost expressions. We must expand the current PlanGram term by
+	// optimizing the group once with each alternate term.
+	if !plangram.CanProvide(member, required.PlanGram) {
 		fullyOptimized = true
 		required.PlanGram.VisitAlternates(func(alternate physical.PlanGram) {
+			// We optimize here rather than using optimizerEnforcer because we're not
+			// adding an enforcer expression.
 			newProps := *required
 			newProps.PlanGram = alternate
 			innerRequired := o.mem.InternPhysicalProps(&newProps)
 			innerState := o.optimizeGroup(member, innerRequired)
 			if o.ratchetCost(state, innerState.best, innerState.cost) {
+				// Track which alternate term won so setLowestCostTree can reconstruct
+				// the correct expression and term.
 				state.bestAlternatePlanGram = alternate
 			}
 			if !innerState.fullyOptimized {

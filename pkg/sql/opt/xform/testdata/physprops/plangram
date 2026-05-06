@@ -1,0 +1,405 @@
+exec-ddl
+CREATE TABLE abc (a INT PRIMARY KEY, b INT, c INT, INDEX abc_b_idx (b), INDEX abc_c_idx (c))
+----
+
+# --------------------------------------------------
+# Exact match — no penalty.
+# --------------------------------------------------
+
+# PlanGram matches the plan the optimizer would choose anyway.
+opt format=show-cost plangram=(root: (Scan);)
+SELECT * FROM abc
+----
+scan abc
+ ├── columns: a:1!null b:2 c:3
+ ├── cost: 1088.62
+ ├── cost-flags: unbounded-cardinality
+ ├── key: (1)
+ └── fd: (1)-->(2,3)
+
+# --------------------------------------------------
+# Mismatch — penalty applied.
+# --------------------------------------------------
+
+# PlanGram specifies an operator that doesn't match.
+opt format=show-cost plangram=(root: (Select);)
+SELECT * FROM abc
+----
+scan abc
+ ├── columns: a:1!null b:2 c:3
+ ├── cost: 1088.62
+ ├── cost-flags: plangram-mismatch unbounded-cardinality
+ ├── key: (1)
+ └── fd: (1)-->(2,3)
+
+# --------------------------------------------------
+# Matching with specific index.
+# --------------------------------------------------
+
+# PlanGram constraining which index to use.
+opt format=show-cost plangram=(root: (Select (IndexJoin (Scan)));)
+SELECT * FROM abc WHERE b = 1 AND c = 1
+----
+select
+ ├── columns: a:1!null b:2!null c:3!null
+ ├── cost: 89.0700007
+ ├── cost-flags: unbounded-cardinality
+ ├── key: (1)
+ ├── fd: ()-->(2,3)
+ ├── index-join abc
+ │    ├── columns: a:1!null b:2 c:3
+ │    ├── cost: 88.9400007
+ │    ├── cost-flags: unbounded-cardinality
+ │    ├── key: (1)
+ │    ├── fd: ()-->(2), (1)-->(3)
+ │    └── scan abc@abc_b_idx
+ │         ├── columns: a:1!null b:2!null
+ │         ├── constraint: /2/1: [/1 - /1]
+ │         ├── cost: 28.4200001
+ │         ├── cost-flags: unbounded-cardinality
+ │         ├── key: (1)
+ │         └── fd: ()-->(2)
+ └── filters
+      └── c:3 = 1 [outer=(3), fd=()-->(3)]
+
+# --------------------------------------------------
+# Alternates — optimizer picks best matching alternate.
+# --------------------------------------------------
+
+# PlanGram with multiple index alternates via a production.
+opt format=show-cost plangram=(root: (Select (IndexJoin scan)); scan: (Scan Index="abc_b_idx") | (Scan Index="abc_c_idx");)
+SELECT * FROM abc WHERE b = 1 AND c = 1
+----
+select
+ ├── columns: a:1!null b:2!null c:3!null
+ ├── cost: 89.0700007
+ ├── cost-flags: unbounded-cardinality
+ ├── key: (1)
+ ├── fd: ()-->(2,3)
+ ├── index-join abc
+ │    ├── columns: a:1!null b:2 c:3
+ │    ├── cost: 88.9400007
+ │    ├── cost-flags: unbounded-cardinality
+ │    ├── key: (1)
+ │    ├── fd: ()-->(2), (1)-->(3)
+ │    └── scan abc@abc_b_idx
+ │         ├── columns: a:1!null b:2!null
+ │         ├── constraint: /2/1: [/1 - /1]
+ │         ├── cost: 28.4200001
+ │         ├── cost-flags: unbounded-cardinality
+ │         ├── key: (1)
+ │         └── fd: ()-->(2)
+ └── filters
+      └── c:3 = 1 [outer=(3), fd=()-->(3)]
+
+# --------------------------------------------------
+# Sort visibility — matching.
+# --------------------------------------------------
+
+# PlanGram that explicitly includes Sort matches a plan with Sort.
+opt format=show-cost plangram=(root: (Sort (Scan));)
+SELECT * FROM abc ORDER BY b
+----
+sort
+ ├── columns: a:1!null b:2 c:3
+ ├── cost: 1338.10194
+ ├── cost-flags: unbounded-cardinality
+ ├── key: (1)
+ ├── fd: (1)-->(2,3)
+ ├── ordering: +2
+ └── scan abc
+      ├── columns: a:1!null b:2 c:3
+      ├── cost: 1088.62
+      ├── cost-flags: unbounded-cardinality
+      ├── key: (1)
+      └── fd: (1)-->(2,3)
+
+# --------------------------------------------------
+# Sort visibility — mismatch.
+# --------------------------------------------------
+
+# PlanGram without Sort applied to a query that needs Sort.
+opt format=show-cost plangram=(root: (Scan);)
+SELECT * FROM abc ORDER BY b
+----
+sort
+ ├── columns: a:1!null b:2 c:3
+ ├── cost: 1338.10194
+ ├── cost-flags: plangram-mismatch unbounded-cardinality
+ ├── key: (1)
+ ├── fd: (1)-->(2,3)
+ ├── ordering: +2
+ └── scan abc
+      ├── columns: a:1!null b:2 c:3
+      ├── cost: 1088.62
+      ├── cost-flags: plangram-mismatch unbounded-cardinality
+      ├── key: (1)
+      └── fd: (1)-->(2,3)
+
+# --------------------------------------------------
+# WithNoneFallback — graceful fallback.
+# --------------------------------------------------
+
+# Default plan for comparison.
+opt format=show-cost
+SELECT * FROM abc WHERE b = 1 AND c = 1
+----
+inner-join (zigzag abc@abc_b_idx abc@abc_c_idx)
+ ├── columns: a:1!null b:2!null c:3!null
+ ├── eq columns: [1] = [1]
+ ├── left fixed columns: [2] = [1]
+ ├── right fixed columns: [3] = [1]
+ ├── cost: 30.14
+ ├── cost-flags: unbounded-cardinality
+ ├── key: (1)
+ ├── fd: ()-->(2,3)
+ └── filters
+      ├── b:2 = 1 [outer=(2), fd=()-->(2)]
+      └── c:3 = 1 [outer=(3), fd=()-->(3)]
+
+# Impossible PlanGram — should get same plan shape but with penalty.
+opt format=show-cost plangram=(root: (InnerJoin);)
+SELECT * FROM abc WHERE b = 1 AND c = 1
+----
+inner-join (zigzag abc@abc_b_idx abc@abc_c_idx)
+ ├── columns: a:1!null b:2!null c:3!null
+ ├── eq columns: [1] = [1]
+ ├── left fixed columns: [2] = [1]
+ ├── right fixed columns: [3] = [1]
+ ├── cost: 30.14
+ ├── cost-flags: plangram-mismatch unbounded-cardinality
+ ├── key: (1)
+ ├── fd: ()-->(2,3)
+ └── filters
+      ├── b:2 = 1 [outer=(2), fd=()-->(2)]
+      └── c:3 = 1 [outer=(3), fd=()-->(3)]
+
+# --------------------------------------------------
+# Child count flexibility — fewer children specified.
+# --------------------------------------------------
+
+# PlanGram with fewer children than the expression has. Should still match.
+opt format=show-cost plangram=(root: (Select (Scan));)
+SELECT * FROM abc WHERE a = 1
+----
+select
+ ├── columns: a:1!null b:2 c:3
+ ├── cardinality: [0 - 1]
+ ├── cost: 1098.64
+ ├── cost-flags: unbounded-cardinality
+ ├── key: ()
+ ├── fd: ()-->(1-3)
+ ├── scan abc
+ │    ├── columns: a:1!null b:2 c:3
+ │    ├── cost: 1088.62
+ │    ├── cost-flags: unbounded-cardinality
+ │    ├── key: (1)
+ │    └── fd: (1)-->(2,3)
+ └── filters
+      └── a:1 = 1 [outer=(1), fd=()-->(1)]
+
+# --------------------------------------------------
+# Nested multi-level matching.
+# --------------------------------------------------
+
+# Deep tree: Select → IndexJoin → Scan, all matching. Use a filter on c that
+# can't be pushed into the b-index scan, forcing Select to remain.
+opt format=show-cost plangram=(root: (Select (IndexJoin (Scan)));)
+SELECT * FROM abc WHERE b = 1 AND c > 0
+----
+select
+ ├── columns: a:1!null b:2!null c:3!null
+ ├── cost: 89.0700007
+ ├── cost-flags: unbounded-cardinality
+ ├── key: (1)
+ ├── fd: ()-->(2), (1)-->(3)
+ ├── index-join abc
+ │    ├── columns: a:1!null b:2 c:3
+ │    ├── cost: 88.9400007
+ │    ├── cost-flags: unbounded-cardinality
+ │    ├── key: (1)
+ │    ├── fd: ()-->(2), (1)-->(3)
+ │    └── scan abc@abc_b_idx
+ │         ├── columns: a:1!null b:2!null
+ │         ├── constraint: /2/1: [/1 - /1]
+ │         ├── cost: 28.4200001
+ │         ├── cost-flags: unbounded-cardinality
+ │         ├── key: (1)
+ │         └── fd: ()-->(2)
+ └── filters
+      └── c:3 > 0 [outer=(3)]
+
+# --------------------------------------------------
+# Partial tree mismatch cascading.
+# --------------------------------------------------
+
+# PlanGram that matches Select at top but specifies Sort as the child, which
+# mismatches the actual IndexJoin child. The mismatch penalty cascades through
+# the subtree below the mismatch point.
+opt format=show-cost plangram=(root: (Select (Sort));)
+SELECT * FROM abc WHERE b = 1 AND c > 0
+----
+select
+ ├── columns: a:1!null b:2!null c:3!null
+ ├── cost: 89.0700007
+ ├── cost-flags: plangram-mismatch unbounded-cardinality
+ ├── key: (1)
+ ├── fd: ()-->(2), (1)-->(3)
+ ├── index-join abc
+ │    ├── columns: a:1!null b:2 c:3
+ │    ├── cost: 88.9400007
+ │    ├── cost-flags: plangram-mismatch unbounded-cardinality
+ │    ├── key: (1)
+ │    ├── fd: ()-->(2), (1)-->(3)
+ │    └── scan abc@abc_b_idx
+ │         ├── columns: a:1!null b:2!null
+ │         ├── constraint: /2/1: [/1 - /1]
+ │         ├── cost: 28.4200001
+ │         ├── cost-flags: plangram-mismatch unbounded-cardinality
+ │         ├── key: (1)
+ │         └── fd: ()-->(2)
+ └── filters
+      └── c:3 > 0 [outer=(3)]
+
+# --------------------------------------------------
+# AnyPlanGram for unspecified children.
+# --------------------------------------------------
+
+# PlanGram specifying only the root operator, leaving children unconstrained.
+opt format=show-cost plangram=(root: (Select);)
+SELECT * FROM abc WHERE a = 1
+----
+select
+ ├── columns: a:1!null b:2 c:3
+ ├── cardinality: [0 - 1]
+ ├── cost: 1098.64
+ ├── cost-flags: unbounded-cardinality
+ ├── key: ()
+ ├── fd: ()-->(1-3)
+ ├── scan abc
+ │    ├── columns: a:1!null b:2 c:3
+ │    ├── cost: 1088.62
+ │    ├── cost-flags: unbounded-cardinality
+ │    ├── key: (1)
+ │    └── fd: (1)-->(2,3)
+ └── filters
+      └── a:1 = 1 [outer=(1), fd=()-->(1)]
+
+# --------------------------------------------------
+# Invisible operator transparency — Distribute.
+# --------------------------------------------------
+
+exec-ddl
+ALTER TABLE abc CONFIGURE ZONE USING constraints='[+region=us]'
+----
+
+# When a DistributeExpr wraps the plan, the PlanGram should see through it
+# and match the inner Scan without penalty.
+opt format=show-cost locality=(region=eu) plangram=(root: (Scan);)
+SELECT * FROM abc
+----
+distribute
+ ├── columns: a:1!null b:2 c:3
+ ├── cost: 1545.24
+ ├── cost-flags: unbounded-cardinality
+ ├── key: (1)
+ ├── fd: (1)-->(2,3)
+ ├── distribution: eu
+ ├── input distribution: us
+ └── scan abc
+      ├── columns: a:1!null b:2 c:3
+      ├── cost: 1345.22
+      ├── cost-flags: unbounded-cardinality
+      ├── key: (1)
+      └── fd: (1)-->(2,3)
+
+exec-ddl
+ALTER TABLE abc CONFIGURE ZONE USING DEFAULT
+----
+
+# --------------------------------------------------
+# Sort + PlanGram interaction — Sort at root.
+# --------------------------------------------------
+
+# PlanGram with Sort at root matches a query that requires sorting.
+opt format=show-cost plangram=(root: (Sort (Scan));)
+SELECT * FROM abc ORDER BY b
+----
+sort
+ ├── columns: a:1!null b:2 c:3
+ ├── cost: 1338.10194
+ ├── cost-flags: unbounded-cardinality
+ ├── key: (1)
+ ├── fd: (1)-->(2,3)
+ ├── ordering: +2
+ └── scan abc
+      ├── columns: a:1!null b:2 c:3
+      ├── cost: 1088.62
+      ├── cost-flags: unbounded-cardinality
+      ├── key: (1)
+      └── fd: (1)-->(2,3)
+
+# --------------------------------------------------
+# Alternates — PlanGram steers to non-default plan shape.
+# --------------------------------------------------
+
+# The default plan for this query uses a zigzag join. The PlanGram specifies
+# Select → IndexJoin → Scan, which is a different operator shape. This proves
+# the PlanGram steered the optimizer to a non-default plan.
+opt format=show-cost plangram=(root: (Select (IndexJoin (Scan)));)
+SELECT * FROM abc WHERE b = 1 AND c = 1
+----
+select
+ ├── columns: a:1!null b:2!null c:3!null
+ ├── cost: 89.0700007
+ ├── cost-flags: unbounded-cardinality
+ ├── key: (1)
+ ├── fd: ()-->(2,3)
+ ├── index-join abc
+ │    ├── columns: a:1!null b:2 c:3
+ │    ├── cost: 88.9400007
+ │    ├── cost-flags: unbounded-cardinality
+ │    ├── key: (1)
+ │    ├── fd: ()-->(2), (1)-->(3)
+ │    └── scan abc@abc_b_idx
+ │         ├── columns: a:1!null b:2!null
+ │         ├── constraint: /2/1: [/1 - /1]
+ │         ├── cost: 28.4200001
+ │         ├── cost-flags: unbounded-cardinality
+ │         ├── key: (1)
+ │         └── fd: ()-->(2)
+ └── filters
+      └── c:3 = 1 [outer=(3), fd=()-->(3)]
+
+# --------------------------------------------------
+# WithNoneFallback — PlanGram preference wins over default.
+# --------------------------------------------------
+
+# The default plan uses a zigzag join (cost ~30), but the PlanGram specifies
+# Select → IndexJoin → Scan. WithNoneFallback ensures both paths are
+# considered, and the PlanGram preference wins because the non-matching
+# (zigzag) plan gets a mismatch penalty.
+opt format=show-cost plangram=(root: (Select (IndexJoin (Scan)));)
+SELECT * FROM abc WHERE b = 1 AND c = 1
+----
+select
+ ├── columns: a:1!null b:2!null c:3!null
+ ├── cost: 89.0700007
+ ├── cost-flags: unbounded-cardinality
+ ├── key: (1)
+ ├── fd: ()-->(2,3)
+ ├── index-join abc
+ │    ├── columns: a:1!null b:2 c:3
+ │    ├── cost: 88.9400007
+ │    ├── cost-flags: unbounded-cardinality
+ │    ├── key: (1)
+ │    ├── fd: ()-->(2), (1)-->(3)
+ │    └── scan abc@abc_b_idx
+ │         ├── columns: a:1!null b:2!null
+ │         ├── constraint: /2/1: [/1 - /1]
+ │         ├── cost: 28.4200001
+ │         ├── cost-flags: unbounded-cardinality
+ │         ├── key: (1)
+ │         └── fd: ()-->(2)
+ └── filters
+      └── c:3 = 1 [outer=(3), fd=()-->(3)]

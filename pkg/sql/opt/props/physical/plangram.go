@@ -207,6 +207,201 @@ func (p PlanGram) WithNoneFallback() PlanGram {
 	return PlanGram{root: prod}
 }
 
+// MergePlanGrams merges multiple PlanGrams into one that accepts any plan
+// matched by any of the inputs (a union of the input grammars). If any
+// input is Any, the result is Any. None inputs are preserved as
+// alternates. Production names are deduplicated across inputs by cloning
+// and renaming colliding productions with a numeric suffix.
+func MergePlanGrams(pgs ...PlanGram) PlanGram {
+	switch len(pgs) {
+	case 0:
+		return AnyPlanGram
+	case 1:
+		return pgs[0]
+	}
+	for _, pg := range pgs {
+		if pg.Any() {
+			return AnyPlanGram
+		}
+	}
+
+	// Collect all productions from all inputs to detect name collisions
+	// (different production pointers with the same name).
+	prodsByName := make(map[string][]*planGramProduction)
+	for _, pg := range pgs {
+		if pg.root == nil || pg.root == nonePlanGramTerm {
+			continue
+		}
+		visited := make(map[*planGramProduction]struct{})
+		pg.root.visitProductions(visited, func(pp *planGramProduction) {
+			for _, existing := range prodsByName[pp.name] {
+				if existing == pp {
+					return
+				}
+			}
+			prodsByName[pp.name] = append(prodsByName[pp.name], pp)
+		})
+	}
+
+	// Build a rename map for colliding production names. The first
+	// production with a given name keeps it; subsequent ones get a numeric
+	// suffix.
+	renames := make(map[*planGramProduction]string)
+	usedNames := make(map[string]struct{})
+	usedNames["_merged"] = struct{}{}
+	for name := range prodsByName {
+		usedNames[name] = struct{}{}
+	}
+	for _, prods := range prodsByName {
+		if len(prods) <= 1 {
+			continue
+		}
+		for _, pp := range prods[1:] {
+			newName := uniquePlanGramName(pp.name, usedNames)
+			renames[pp] = newName
+			usedNames[newName] = struct{}{}
+		}
+	}
+
+	// Build roots for the merged production, cloning any subgraph that
+	// contains renamed productions.
+	roots := make([]planGramTerm, len(pgs))
+	for i, pg := range pgs {
+		if pg.root == nil || pg.root == nonePlanGramTerm || len(renames) == 0 {
+			roots[i] = pg.root
+			continue
+		}
+		inputProds := make(map[*planGramProduction]struct{})
+		hasRename := false
+		visited := make(map[*planGramProduction]struct{})
+		pg.root.visitProductions(visited, func(pp *planGramProduction) {
+			inputProds[pp] = struct{}{}
+			if _, ok := renames[pp]; ok {
+				hasRename = true
+			}
+		})
+		if !hasRename {
+			roots[i] = pg.root
+			continue
+		}
+
+		// Determine which productions need cloning: renamed ones plus
+		// any that transitively reference a renamed production.
+		needsClone := make(map[*planGramProduction]bool)
+		for pp := range inputProds {
+			if _, ok := renames[pp]; ok {
+				needsClone[pp] = true
+			}
+		}
+		for changed := true; changed; {
+			changed = false
+			for pp := range inputProds {
+				if needsClone[pp] {
+					continue
+				}
+				for _, rule := range pp.rules {
+					if planGramTermReferences(rule, needsClone) {
+						needsClone[pp] = true
+						changed = true
+						break
+					}
+				}
+			}
+		}
+
+		cloneMap := make(map[*planGramProduction]*planGramProduction)
+		roots[i] = clonePlanGramTerm(pg.root, cloneMap, renames, needsClone)
+	}
+
+	return PlanGram{root: &planGramProduction{
+		name:  "_merged",
+		rules: roots,
+	}}
+}
+
+// uniquePlanGramName returns base with a numeric suffix that doesn't
+// collide with any name in used.
+func uniquePlanGramName(base string, used map[string]struct{}) string {
+	for i := 2; ; i++ {
+		candidate := base + "_" + strconv.Itoa(i)
+		if _, ok := used[candidate]; !ok {
+			return candidate
+		}
+	}
+}
+
+// planGramTermReferences reports whether term directly references any
+// production in set, traversing through exprs but not into other
+// productions.
+func planGramTermReferences(term planGramTerm, set map[*planGramProduction]bool) bool {
+	if term == nil || term == nonePlanGramTerm {
+		return false
+	}
+	switch t := term.(type) {
+	case *planGramProduction:
+		return set[t]
+	case *planGramExpr:
+		for _, child := range t.children {
+			if planGramTermReferences(child, set) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// clonePlanGramTerm deep-copies a term, applying production renames. Only
+// productions in needsClone are cloned; others are returned as-is to
+// preserve pointer identity and avoid duplicate names in the merged
+// graph.
+func clonePlanGramTerm(
+	term planGramTerm,
+	clones map[*planGramProduction]*planGramProduction,
+	renames map[*planGramProduction]string,
+	needsClone map[*planGramProduction]bool,
+) planGramTerm {
+	if term == nil || term == nonePlanGramTerm {
+		return term
+	}
+	switch t := term.(type) {
+	case *planGramProduction:
+		if clone, ok := clones[t]; ok {
+			return clone
+		}
+		if !needsClone[t] {
+			return t
+		}
+		name := t.name
+		if newName, ok := renames[t]; ok {
+			name = newName
+		}
+		clone := &planGramProduction{name: name}
+		clones[t] = clone
+		clone.rules = make([]planGramTerm, len(t.rules))
+		for i, rule := range t.rules {
+			clone.rules[i] = clonePlanGramTerm(rule, clones, renames, needsClone)
+		}
+		return clone
+	case *planGramExpr:
+		if len(t.children) == 0 {
+			return t
+		}
+		children := make([]planGramTerm, len(t.children))
+		changed := false
+		for i, child := range t.children {
+			children[i] = clonePlanGramTerm(child, clones, renames, needsClone)
+			if children[i] != child {
+				changed = true
+			}
+		}
+		if !changed {
+			return t
+		}
+		return &planGramExpr{op: t.op, fields: t.fields, children: children}
+	}
+	return term
+}
+
 // FormatPretty writes the full PlanGram grammar to the buffer, starting with
 // the root, optionally with multiple lines.
 func (p PlanGram) FormatPretty(b *bytes.Buffer, newlines bool) {

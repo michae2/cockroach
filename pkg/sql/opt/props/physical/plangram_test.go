@@ -847,6 +847,155 @@ func TestPlanGramWithNoneFallback(t *testing.T) {
 	})
 }
 
+func TestMergePlanGrams(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	t.Run("zero inputs", func(t *testing.T) {
+		result := MergePlanGrams()
+		require.True(t, result.Any())
+	})
+
+	t.Run("single input passthrough", func(t *testing.T) {
+		pg := PlanGram{root: &planGramExpr{op: opt.ScanOp}}
+		result := MergePlanGrams(pg)
+		require.True(t, result.Equals(pg))
+	})
+
+	t.Run("single any", func(t *testing.T) {
+		result := MergePlanGrams(AnyPlanGram)
+		require.True(t, result.Any())
+	})
+
+	t.Run("single none", func(t *testing.T) {
+		result := MergePlanGrams(NonePlanGram)
+		require.True(t, result.Equals(NonePlanGram))
+	})
+
+	t.Run("any subsumes at start", func(t *testing.T) {
+		pg := PlanGram{root: &planGramExpr{op: opt.ScanOp}}
+		result := MergePlanGrams(AnyPlanGram, pg)
+		require.True(t, result.Any())
+	})
+
+	t.Run("any subsumes at end", func(t *testing.T) {
+		pg := PlanGram{root: &planGramExpr{op: opt.ScanOp}}
+		result := MergePlanGrams(pg, AnyPlanGram)
+		require.True(t, result.Any())
+	})
+
+	t.Run("all none", func(t *testing.T) {
+		result := MergePlanGrams(NonePlanGram, NonePlanGram)
+		require.True(t, result.HasAlternates())
+		var count int
+		result.VisitAlternates(func(alt PlanGram) {
+			require.True(t, alt.None())
+			count++
+		})
+		require.Equal(t, 2, count)
+	})
+
+	t.Run("two concrete expressions", func(t *testing.T) {
+		pg1 := PlanGram{root: &planGramExpr{op: opt.ScanOp}}
+		pg2 := PlanGram{root: &planGramExpr{op: opt.SelectOp}}
+		result := MergePlanGrams(pg1, pg2)
+		require.True(t, result.HasAlternates())
+		var count int
+		result.VisitAlternates(func(alt PlanGram) {
+			require.False(t, alt.HasAlternates())
+			count++
+		})
+		require.Equal(t, 2, count)
+	})
+
+	t.Run("three concrete expressions", func(t *testing.T) {
+		pg1 := PlanGram{root: &planGramExpr{op: opt.ScanOp}}
+		pg2 := PlanGram{root: &planGramExpr{op: opt.SelectOp}}
+		pg3 := PlanGram{root: &planGramExpr{op: opt.InnerJoinOp}}
+		result := MergePlanGrams(pg1, pg2, pg3)
+		require.Equal(t,
+			"root: _merged; _merged: (Scan) | (Select) | (InnerJoin);",
+			result.String(),
+		)
+	})
+
+	t.Run("concrete and none", func(t *testing.T) {
+		pg := PlanGram{root: &planGramExpr{op: opt.ScanOp}}
+		result := MergePlanGrams(pg, NonePlanGram)
+		require.True(t, result.HasAlternates())
+		var hasNone, hasConcrete bool
+		result.VisitAlternates(func(alt PlanGram) {
+			if alt.None() {
+				hasNone = true
+			} else {
+				hasConcrete = true
+			}
+		})
+		require.True(t, hasNone)
+		require.True(t, hasConcrete)
+	})
+
+	t.Run("name collision", func(t *testing.T) {
+		scan1 := &planGramProduction{
+			name: "scan",
+			rules: []planGramTerm{&planGramExpr{
+				op:     opt.ScanOp,
+				fields: []PlanGramField{{Key: "Index", Val: "a"}},
+			}},
+		}
+		scan2 := &planGramProduction{
+			name: "scan",
+			rules: []planGramTerm{&planGramExpr{
+				op:     opt.ScanOp,
+				fields: []PlanGramField{{Key: "Index", Val: "b"}},
+			}},
+		}
+		pg1 := PlanGram{root: &planGramExpr{
+			op:       opt.SelectOp,
+			children: []planGramTerm{scan1},
+		}}
+		pg2 := PlanGram{root: &planGramExpr{
+			op:       opt.SelectOp,
+			children: []planGramTerm{scan2},
+		}}
+		result := MergePlanGrams(pg1, pg2)
+		require.Equal(t,
+			`root: _merged;`+
+				` _merged: (Select scan) | (Select scan_2);`+
+				` scan: (Scan Index="a");`+
+				` scan_2: (Scan Index="b");`,
+			result.String(),
+		)
+		// Verify original PlanGrams are not mutated.
+		require.Equal(t, "scan", scan1.name)
+		require.Equal(t, "scan", scan2.name)
+	})
+
+	t.Run("no name collision", func(t *testing.T) {
+		scanA := &planGramProduction{
+			name:  "scanA",
+			rules: []planGramTerm{&planGramExpr{op: opt.ScanOp}},
+		}
+		scanB := &planGramProduction{
+			name:  "scanB",
+			rules: []planGramTerm{&planGramExpr{op: opt.ScanOp}},
+		}
+		pg1 := PlanGram{root: &planGramExpr{
+			op:       opt.SelectOp,
+			children: []planGramTerm{scanA},
+		}}
+		pg2 := PlanGram{root: &planGramExpr{
+			op:       opt.SelectOp,
+			children: []planGramTerm{scanB},
+		}}
+		result := MergePlanGrams(pg1, pg2)
+		s := result.String()
+		require.Contains(t, s, "scanA:")
+		require.Contains(t, s, "scanB:")
+		require.NotContains(t, s, "_2")
+	})
+}
+
 func TestPlanGramParse(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
